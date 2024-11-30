@@ -29,14 +29,11 @@ class Actor:
                 action = torch.multinomial(torch.softmax(logits, dim=-1), 1).item()
 
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
-                # 보상 커스터마이징
+                
                 if terminated or truncated:
-                    reward -= 10  # 에피소드 종료 시 패널티
-                else:
-                    reward += 0.1 * (1 - abs(next_state[2]))  # 기울기에 따라 보상 조정
-
+                    reward -= 10
+                    
                 done = terminated or truncated
-                print(reward) 
                 self.trajectory["states"].append(self.state)
                 self.trajectory["actions"].append(action)
                 self.trajectory["rewards"].append(reward)
