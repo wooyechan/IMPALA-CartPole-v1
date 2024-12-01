@@ -3,13 +3,12 @@ import gym
 import numpy as np
 
 class Actor:
-    def __init__(self, actor_id, model, queue, t_max, shared_model):
+    def __init__(self, actor_id, model, queue, shared_model):
         self.actor_id = actor_id
         self.env = gym.make("CartPole-v1")
         self.local_model = model
         self.shared_model = shared_model
         self.queue = queue
-        self.t_max = t_max
         state, _ = self.env.reset()
         self.state = np.array(state, dtype=np.float32)
         self.done = False
@@ -22,17 +21,14 @@ class Actor:
     def run(self):
         while True:
             self.sync_model()  # Get latest model from Learner
-            for _ in range(self.t_max):
+            while True:
                 state_tensor = torch.tensor(self.state, dtype=torch.float32).unsqueeze(0)
                 with torch.no_grad():
                     logits, value = self.local_model(state_tensor)
                 action = torch.multinomial(torch.softmax(logits, dim=-1), 1).item()
 
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
-                
-                if terminated or truncated:
-                    reward -= 10
-                    
+
                 done = terminated or truncated
                 self.trajectory["states"].append(self.state)
                 self.trajectory["actions"].append(action)

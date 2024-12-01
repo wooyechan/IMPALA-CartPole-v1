@@ -11,7 +11,7 @@ import numpy as np
 if __name__ == "__main__":
     torch.multiprocessing.set_start_method("spawn")
     
-    env = gym.make(Config.ENV_NAME)
+    env = gym.make("CartPole-v1")
     obs_space = env.observation_space.shape[0]
     action_space = env.action_space.n
     env.close()
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     actors = []
     for i in range(Config.NUM_ACTORS):
         local_model = PolicyNetwork(obs_space, action_space)
-        actor = Actor(i, local_model, queue, Config.T_MAX, shared_model)
+        actor = Actor(i, local_model, queue, shared_model)
         process = mp.Process(target=actor.run)
         actors.append(process)
 
