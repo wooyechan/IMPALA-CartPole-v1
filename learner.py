@@ -1,77 +1,106 @@
 import torch
-import numpy as np
 from config import Config
+from vtrace import from_importance_weights
 
 class Learner:
     def __init__(self, model, optimizer, stop_event):
-        self.shared_model = model.to("cpu")
+        self.device = torch.device("cpu")
+        self.shared_model = model.to(self.device)
         self.optimizer = optimizer
         self.gamma = Config.GAMMA
         self.stop_event = stop_event
+        self.baseline_cost = Config.BASELINE_LOSS_WEIGHT
+        self.entropy_cost = Config.ENTROPY_COST
 
-    def compute_vtrace(self, rewards, values, log_mu, log_pi):
-        rho = torch.clamp(torch.exp(log_pi - log_mu), max=Config.RHO_MAX)
-        coef = torch.clamp(rho, max=Config.COEF_MAX)
+    @torch.no_grad()
+    def _prepare_batch(self, batch):
+        """Prepare batch data efficiently"""
+        states = torch.tensor(batch["states"], dtype=torch.float32, device=self.device)
+        actions = torch.tensor(batch["actions"], dtype=torch.long, device=self.device)
+        rewards = torch.tensor(batch["rewards"], dtype=torch.float32, device=self.device)
+        values = torch.tensor(batch["values"], dtype=torch.float32, device=self.device)
+        behavior_logits = torch.tensor(batch["logits"], dtype=torch.float32, device=self.device)
+        done = torch.tensor(batch["done"], dtype=torch.bool, device=self.device)
+        return states, actions, rewards, values, behavior_logits, done
 
-        T, B = rewards.size(0), rewards.size(1)
-        vs = torch.zeros((T + 1, B), device=rewards.device)
-        advantages = torch.zeros((T, B), device=rewards.device)
-        next_values = torch.cat([values, torch.zeros(1, B, device=values.device)], dim=0)
+    def compute_loss(self, states, actions, behavior_logits, target_logits, rewards, values, done):
+        """Compute IMPALA loss efficiently"""
+        # Convert done flags to discount factors (0 if done, gamma otherwise)
+        discounts = self.gamma * (~done).float()
+        
+        # Get bootstrap value for last state
+        with torch.no_grad():
+            _, bootstrap_value = self.shared_model(states[-1].unsqueeze(0))
+            bootstrap_value = bootstrap_value.squeeze()
 
-        for rev_step in reversed(range(T)):
-            delta = rho[rev_step] * (rewards[rev_step] + self.gamma * next_values[rev_step + 1] - values[rev_step])
-            advantages[rev_step] = delta
-            vs[rev_step] = (
-                values[rev_step]
-                + delta
-                + self.gamma * coef[rev_step] * (vs[rev_step + 1] - next_values[rev_step + 1])
-            )
+        # Compute vtrace targets and advantages
+        vtrace_returns = from_importance_weights(
+            behavior_policy_logits=behavior_logits,
+            target_policy_logits=target_logits,
+            actions=actions,
+            discounts=discounts,
+            rewards=rewards,
+            values=values,
+            bootstrap_value=bootstrap_value,
+            clip_rho_threshold=Config.RHO_MAX,
+            clip_pg_rho_threshold=Config.COEF_MAX
+        )
 
-        return vs[:-1], advantages
+        # Compute all losses in one go
+        policy_dist = torch.distributions.Categorical(logits=target_logits)
+        log_policy = policy_dist.log_prob(actions)
+        entropy = policy_dist.entropy()
+
+        policy_loss = -(log_policy * vtrace_returns["pg_advantages"].detach()).mean()
+        value_loss = 0.5 * ((values - vtrace_returns["vs"].detach()) ** 2).mean()
+        entropy_bonus = entropy.mean()
+
+        total_loss = (
+            policy_loss +
+            self.baseline_cost * value_loss -
+            self.entropy_cost * entropy_bonus
+        )
+
+        return total_loss, policy_loss, value_loss, entropy_bonus
 
     def learn(self, queue):
         step = 0
         while not self.stop_event.is_set():
             if not queue.empty():
-                batch = queue.get()
+                try:
+                    # Process batch
+                    batch = queue.get()
+                    states, actions, rewards, values, behavior_logits, done = self._prepare_batch(batch)
+                    
+                    # Get current policy predictions
+                    target_logits, current_values = self.shared_model(states)
+                    current_values = current_values.squeeze(-1)
 
-                states = torch.tensor(np.array(batch["states"]), dtype=torch.float32).to("cpu")
-                actions = torch.tensor(np.array(batch["actions"]), dtype=torch.long).to("cpu")
-                rewards = torch.tensor(np.array(batch["rewards"]), dtype=torch.float32).to("cpu")
-                logits = torch.tensor(np.array(batch["logits"]), dtype=torch.float32).to("cpu")
-
-                probs = torch.softmax(logits, dim=-1)
-                dist = torch.distributions.Categorical(probs)
-                log_mu = dist.log_prob(actions)
-
-                current_logits, values = self.shared_model(states)
-                values = values.squeeze(-1)
-                dist_learner = torch.distributions.Categorical(logits=current_logits)
-                log_pi = dist_learner.log_prob(actions).unsqueeze(-1)
-
-                vs, advantages = self.compute_vtrace(
-                    rewards=rewards.unsqueeze(-1),
-                    values=values.unsqueeze(-1),
-                    log_mu=log_mu.unsqueeze(-1),
-                    log_pi=log_pi,
-                )
-
-                policy_loss = -(log_pi * advantages.detach()).sum()
-                baseline_loss = 0.5 * ((vs.detach() - values.unsqueeze(-1)) ** 2).sum()
-                entropy_loss = -0.01 * dist_learner.entropy().sum()
-
-                total_loss = policy_loss + Config.BASELINE_LOSS_WEIGHT * baseline_loss + entropy_loss
-
-                self.optimizer.zero_grad()
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.shared_model.parameters(), Config.GRAD_CLIP)
-                self.optimizer.step()
-
-                if step % Config.LOG_INTERVAL == 0:
-                    print(
-                        f"[Learner] Step: {step}, Loss: {total_loss.item():.3f}, "
-                        f"Policy Loss: {policy_loss.item():.3f}, "
-                        f"Baseline Loss: {baseline_loss.item():.3f}, "
-                        f"Entropy Loss: {entropy_loss.item():.3f}"
+                    # Compute losses
+                    total_loss, policy_loss, value_loss, entropy = self.compute_loss(
+                        states=states,
+                        actions=actions,
+                        behavior_logits=behavior_logits,
+                        target_logits=target_logits,
+                        rewards=rewards,
+                        values=values,
+                        done=done
                     )
-                step += 1
+
+                    # Optimize
+                    self.optimizer.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.shared_model.parameters(), Config.GRAD_CLIP)
+                    self.optimizer.step()
+
+                    if step % Config.LOG_INTERVAL == 0:
+                        print(
+                            f"[Learner] Step: {step}, Loss: {total_loss.item():.3f}, "
+                            f"Policy Loss: {policy_loss.item():.3f}, "
+                            f"Value Loss: {value_loss.item():.3f}, "
+                            f"Entropy: {entropy.item():.3f}"
+                        )
+                    step += 1
+                except Exception as e:
+                    print(f"Error in learner: {str(e)}")
+                    continue
