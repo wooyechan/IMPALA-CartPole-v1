@@ -1,6 +1,9 @@
 class Config:
-    NUM_ACTORS = 4
-    BATCH_SIZE = 16
-    LEARNING_RATE = 1e-4
     GAMMA = 0.99
-    MAX_STEPS = 500
+    LEARNING_RATE = 0.0001
+    QUEUE_SIZE = 10
+    RHO_MAX = 1.0
+    COEF_MAX = 1.0
+    BASELINE_LOSS_WEIGHT = 0.5
+    GRAD_CLIP = 40.0
+    LOG_INTERVAL = 100

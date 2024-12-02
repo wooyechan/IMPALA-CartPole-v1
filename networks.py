@@ -1,5 +1,5 @@
 import torch.nn as nn
-import torch
+import torch.nn.functional as F
 
 class PolicyNetwork(nn.Module):
     def __init__(self, input_dim, action_dim):
@@ -9,8 +9,7 @@ class PolicyNetwork(nn.Module):
         self.value = nn.Linear(256, 1)
 
     def forward(self, x):
-        x = x.view(x.size(0), -1)  # 입력을 평면화 (batch_size, input_dim)
-        x = torch.relu(self.fc(x))
-        policy_logits = self.policy(x)
+        x = F.relu(self.fc(x))
+        logits = self.policy(x)
         value = self.value(x)
-        return policy_logits, value
+        return logits, value
