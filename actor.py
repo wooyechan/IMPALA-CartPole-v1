@@ -3,6 +3,7 @@ import torch
 import numpy as np
 np.bool8 = bool
 from torch.utils.tensorboard import SummaryWriter
+from config import Config
 
 class Actor:
     def __init__(self, actor_id, model, queue, shared_model, stop_event):
@@ -15,36 +16,22 @@ class Actor:
         
     def sync_model(self):
         self.local_model.load_state_dict(self.shared_model.state_dict())
-        
-    def reset(self):
-        """
-        환경을 초기화하고 초기 상태 및 trajectory를 반환합니다.
-        """
-        total = 0
-        state = np.array(self.env.reset()[0], dtype=np.float32)
-        trajectory = {
-            "states": [],
-            "actions": [],
-            "rewards": [],
-            "logits": [],  # action logits
-            "done": []     # episode termination flags
-        }
-        return total, state, trajectory
 
     def run(self):
         writer = SummaryWriter(log_dir=f"logs/actor_{self.actor_id}")
         episode = 0
-        total, state, trajectory = self.reset()
-        
+        total = 0
+        state = np.array(self.env.reset()[0], dtype=np.float32)
+
         while not self.stop_event.is_set():
             self.sync_model() 
-            trajectory_length = 0
-            max_steps = 5  # Maximum trajectory length
+            states, actions, rewards, logits, dones = [], [], [], [], []
             
-            while trajectory_length < max_steps and not self.stop_event.is_set():
+            # Collect fixed-length trajectory
+            for _ in range(Config.UNROLL_LENGTH):
                 with torch.no_grad():
-                    logits, _ = self.local_model(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
-                probs = torch.softmax(logits, dim=-1)
+                    logits_tensor, _ = self.local_model(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
+                probs = torch.softmax(logits_tensor, dim=-1)
                 action = torch.multinomial(probs, 1).item()
 
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
@@ -52,32 +39,29 @@ class Actor:
                 done = bool(terminated) or bool(truncated)
 
                 # Trajectory 업데이트
-                trajectory["states"].append(state)
-                trajectory["actions"].append(action)
-                trajectory["rewards"].append(reward)
-                trajectory["logits"].append(logits.squeeze(0).numpy())
-                trajectory["done"].append(done)
+                states.append(state)
+                actions.append(action)
+                rewards.append(reward)
+                logits.append(logits_tensor.squeeze(0).numpy())
+                dones.append(done)
                 
-                trajectory_length += 1
                 state = np.array(next_state, dtype=np.float32)
                 
                 if done:
-                    break
-
-            # If we have collected any steps, send the trajectory
-            if trajectory_length > 0:
-                # Send trajectory to learner
-                self.queue.put({
-                    "states": np.array(trajectory["states"]),
-                    "actions": np.array(trajectory["actions"]),
-                    "rewards": np.array(trajectory["rewards"]),
-                    "logits": np.array(trajectory["logits"]),
-                    "done": np.array(trajectory["done"])
-                })
+                    # TensorBoard에 에피소드 보상 기록
+                    total = 0
+                    episode += 1
+                    writer.add_scalar("score", total, episode)
+                    print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
+                    
+            # 항상 trajectory를 queue에 전송
+            self.queue.put((
+                np.array(states),
+                np.array(actions),
+                np.array(rewards),
+                np.array(logits),
+                np.array(dones)
+            ))
 
             if done:
-                # TensorBoard에 에피소드 보상 기록
-                episode += 1
-                writer.add_scalar("score", total, episode)
-                print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
-                total, state, trajectory = self.reset()
+                state = np.array(self.env.reset()[0], dtype=np.float32)
