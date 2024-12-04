@@ -26,7 +26,6 @@ class Actor:
             "states": [],
             "actions": [],
             "rewards": [],
-            "values": [],  # value estimates
             "logits": [],  # action logits
             "done": []     # episode termination flags
         }
@@ -40,12 +39,11 @@ class Actor:
         while not self.stop_event.is_set():
             self.sync_model() 
             trajectory_length = 0
-            max_steps = 20  # Maximum trajectory length
+            max_steps = 5  # Maximum trajectory length
             
             while trajectory_length < max_steps and not self.stop_event.is_set():
                 with torch.no_grad():
-                    logits, value = self.local_model(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
-                    value = value.squeeze()  # Remove all extra dimensions
+                    logits, _ = self.local_model(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
                 probs = torch.softmax(logits, dim=-1)
                 action = torch.multinomial(probs, 1).item()
 
@@ -57,7 +55,6 @@ class Actor:
                 trajectory["states"].append(state)
                 trajectory["actions"].append(action)
                 trajectory["rewards"].append(reward)
-                trajectory["values"].append(value.item())  # Convert to scalar
                 trajectory["logits"].append(logits.squeeze(0).numpy())
                 trajectory["done"].append(done)
                 
@@ -74,7 +71,6 @@ class Actor:
                     "states": np.array(trajectory["states"]),
                     "actions": np.array(trajectory["actions"]),
                     "rewards": np.array(trajectory["rewards"]),
-                    "values": np.array(trajectory["values"]),
                     "logits": np.array(trajectory["logits"]),
                     "done": np.array(trajectory["done"])
                 })
