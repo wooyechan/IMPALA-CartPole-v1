@@ -13,28 +13,22 @@ class Actor:
         self.shared_model = shared_model
         self.queue = queue
         self.stop_event = stop_event
-        
-    def sync_model(self):
-        self.local_model.load_state_dict(self.shared_model.state_dict())
+        self.writer = SummaryWriter(log_dir=f"logs/actor_{self.actor_id}")
         
     def reset(self):
-        """
-        환경을 초기화하고 초기 상태 및 trajectory를 반환합니다.
-        """
         total = 0
         state = np.array(self.env.reset()[0], dtype=np.float32)
         return total, state
 
     def run(self):
-        writer = SummaryWriter(log_dir=f"logs/actor_{self.actor_id}")
         episode = 0
         total, state = self.reset()
 
         while not self.stop_event.is_set():
-            self.sync_model() 
+            #sync_model
+            self.local_model.load_state_dict(self.shared_model.state_dict())
             states, actions, rewards, logits, dones = [], [], [], [], []
             
-            # Collect fixed-length trajectory
             for _ in range(Config.UNROLL_LENGTH):
                 with torch.no_grad():
                     logits_tensor, _ = self.local_model(torch.tensor(state, dtype=torch.float32).unsqueeze(0))
@@ -45,7 +39,6 @@ class Actor:
                 total += reward
                 done = bool(terminated) or bool(truncated)
 
-                # Trajectory 업데이트
                 states.append(state)
                 actions.append(action)
                 rewards.append(reward)
@@ -54,13 +47,11 @@ class Actor:
                 
                 state = np.array(next_state, dtype=np.float32)
                 if done:
-                    # TensorBoard에 에피소드 보상 기록
                     episode += 1
-                    writer.add_scalar("score", total, episode)
+                    self.writer.add_scalar("score", total, episode)
                     print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
                     total, state = self.reset()
 
-            # 항상 trajectory를 queue에 전송
             self.queue.put((
                 np.array(states),
                 np.array(actions),
@@ -68,4 +59,3 @@ class Actor:
                 np.array(logits),
                 np.array(dones)
             ))
-

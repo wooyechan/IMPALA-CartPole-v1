@@ -55,6 +55,7 @@ def main():
         print("\nTraining interrupted. Cleaning up...")
     finally:
         stop_event.set()
+        learner.cleanup()  # Close TensorBoard writer
         for p in processes:
             p.terminate()
             p.join()
