@@ -16,12 +16,19 @@ class Actor:
         
     def sync_model(self):
         self.local_model.load_state_dict(self.shared_model.state_dict())
+        
+    def reset(self):
+        """
+        환경을 초기화하고 초기 상태 및 trajectory를 반환합니다.
+        """
+        total = 0
+        state = np.array(self.env.reset()[0], dtype=np.float32)
+        return total, state
 
     def run(self):
         writer = SummaryWriter(log_dir=f"logs/actor_{self.actor_id}")
         episode = 0
-        total = 0
-        state = np.array(self.env.reset()[0], dtype=np.float32)
+        total, state = self.reset()
 
         while not self.stop_event.is_set():
             self.sync_model() 
@@ -46,14 +53,13 @@ class Actor:
                 dones.append(done)
                 
                 state = np.array(next_state, dtype=np.float32)
-                
                 if done:
                     # TensorBoard에 에피소드 보상 기록
-                    total = 0
                     episode += 1
                     writer.add_scalar("score", total, episode)
                     print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
-                    
+                    total, state = self.reset()
+
             # 항상 trajectory를 queue에 전송
             self.queue.put((
                 np.array(states),
@@ -63,5 +69,3 @@ class Actor:
                 np.array(dones)
             ))
 
-            if done:
-                state = np.array(self.env.reset()[0], dtype=np.float32)
