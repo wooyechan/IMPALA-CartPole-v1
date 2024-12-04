@@ -20,7 +20,7 @@ This project implements the IMPALA (Importance Weighted Actor-Learner Architectu
 Ensure you have Python 3.7+ and install the necessary dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install -r dependencies/requirements.txt
 ```
 
 ## Run
