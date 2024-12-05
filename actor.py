@@ -25,7 +25,6 @@ class Actor:
         total, state = self.reset()
 
         while not self.stop_event.is_set():
-            #sync_model
             self.local_model.load_state_dict(self.shared_model.state_dict())
             states, actions, rewards, logits, dones = [], [], [], [], []
             
@@ -49,7 +48,8 @@ class Actor:
                 if done:
                     episode += 1
                     self.writer.add_scalar("score", total, episode)
-                    print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
+                    # Logs with print
+                    # print(f"Actor {self.actor_id}: Episode {episode}, Reward: {total}")
                     total, state = self.reset()
 
             self.queue.put((
@@ -59,3 +59,12 @@ class Actor:
                 np.array(logits),
                 np.array(dones)
             ))
+
+    def cleanup(self):
+        if hasattr(self, 'writer'):
+            self.writer.close()
+        if hasattr(self, 'env'):
+            self.env.close()
+
+    def __del__(self):
+        self.cleanup()

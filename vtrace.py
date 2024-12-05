@@ -15,8 +15,6 @@ def compute_vtrace(actor_policy_logits, learner_policy_logits, actions, discount
 
     # Compute truncated importance sampling weights (c_t)
     cs = torch.clamp(rhos, max=Config.COEF_MAX)
-    
-    # Compute truncated rhos for immediate advantages
     clipped_rhos = torch.clamp(rhos, max=Config.RHO_MAX)
 
     # Compute temporal differences
@@ -33,7 +31,7 @@ def compute_vtrace(actor_policy_logits, learner_policy_logits, actions, discount
         curr_c = cs[:, t]
         curr_delta = deltas[:, t]
         
-        vs_t = values[:, t] + curr_c * (curr_delta + curr_discount * last_v - values[:, t])
+        vs_t = values[:, t] + curr_delta + curr_c * curr_discount * (last_v - values[:, t])
         vs[:, t] = vs_t
         last_v = vs_t
 

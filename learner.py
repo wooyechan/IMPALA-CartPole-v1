@@ -12,14 +12,34 @@ class Learner:
         self.optimizer = optimizer
         self.stop_event = stop_event
         self.queue_manager = QueueManager(device=self.device)
-        self.writer = SummaryWriter('logs/runs')
+        
+        # Create writers with more specific paths but same graph titles
+        self.writers = {
+            'Loss': {
+                'total': SummaryWriter('logs/runs/loss/total'),
+                'policy': SummaryWriter('logs/runs/loss/policy'),
+                'baseline': SummaryWriter('logs/runs/loss/baseline'),
+                'entropy': SummaryWriter('logs/runs/loss/entropy')
+            },
+            'IS_Ratio': {
+                'min': SummaryWriter('logs/runs/is_ratio/min'),
+                'max': SummaryWriter('logs/runs/is_ratio/max'),
+                'avg': SummaryWriter('logs/runs/is_ratio/avg')
+            },
+            'Time': {
+                'batch': SummaryWriter('logs/runs/time/batch'),
+                'forward': SummaryWriter('logs/runs/time/forward'),
+                'backward': SummaryWriter('logs/runs/time/backward'),
+                'total': SummaryWriter('logs/runs/time/total')
+            }
+        }
+        
         self.step = 0
         self.log_interval = 100
         self.metric_buffer = {
-            'Loss/total': [], 'Loss/policy': [], 'Loss/value': [], 'Loss/entropy': [],
+            'Loss/total': [], 'Loss/policy': [], 'Loss/baseline': [], 'Loss/entropy': [],
             'IS_Ratio/min': [], 'IS_Ratio/max': [], 'IS_Ratio/avg': [],
-            'Timing/batch_time': [], 'Timing/forward_time': [], 'Timing/backward_time': [],
-            'Timing/vtrace_time': []
+            'Time/batch': [], 'Time/forward': [], 'Time/backward': [], 'Time/total': []
         }
 
     def compute_loss(self, states, actions, actor_logits, learner_logits, rewards, values, done):
@@ -39,19 +59,28 @@ class Learner:
         entropy = policy_dist.entropy().mean(dim=1)
 
         policy_loss = -(log_policy * pg_advantages.detach()).mean()
-        value_loss = 0.5 * ((values - vs.detach()) ** 2).mean()
+        baseline_loss = 0.5 * ((values - vs.detach()) ** 2).mean()
         entropy_loss = entropy.mean()
 
-        total_loss = policy_loss + Config.BASELINE_LOSS_WEIGHT * value_loss - Config.ENTROPY_COST * entropy_loss
+        total_loss = policy_loss + Config.BASELINE_LOSS_WEIGHT * baseline_loss - Config.ENTROPY_COST * entropy_loss
 
-        return total_loss, policy_loss, value_loss, entropy_loss, rhos
+        return total_loss, policy_loss, baseline_loss, entropy_loss, rhos
 
     def log_metrics(self):
         for metric_name, values in self.metric_buffer.items():
             if values:
                 avg_value = sum(values) / len(values)
-                self.writer.add_scalar(metric_name, avg_value, self.step)
+                category, name = metric_name.split('/')
+                # Log with the same title for related metrics
+                self.writers[category][name].add_scalar(category, avg_value, self.step)
+        
+        # Clear the buffer after logging
         self.metric_buffer = {k: [] for k in self.metric_buffer.keys()}
+        
+        # Flush all writers
+        for category in self.writers.values():
+            for writer in category.values():
+                writer.flush()
 
     def learn(self, queue):
         while not self.stop_event.is_set():
@@ -70,12 +99,10 @@ class Learner:
             learner_logits, values = self.shared_model(states_flat)
             learner_logits = learner_logits.reshape(B, T, -1)
             values = values.reshape(B, T)
-            forward_time = time.time() - forward_start_time
 
             # Loss computation with vtrace
-            vtrace_start_time = time.time()
-            total_loss, policy_loss, value_loss, entropy, rhos = self.compute_loss(states, actions, actor_logits, learner_logits, rewards, values, done)
-            vtrace_time = time.time() - vtrace_start_time
+            total_loss, policy_loss, baseline_loss, entropy, rhos = self.compute_loss(states, actions, actor_logits, learner_logits, rewards, values, done)
+            forward_time = time.time() - forward_start_time
 
             # Optimization step
             backward_start_time = time.time()
@@ -95,15 +122,15 @@ class Learner:
             metrics = {
                 'Loss/total': total_loss.item(),
                 'Loss/policy': policy_loss.item(),
-                'Loss/value': value_loss.item(),
+                'Loss/baseline': baseline_loss.item(),
                 'Loss/entropy': entropy.item(),
                 'IS_Ratio/min': min_ratio,
                 'IS_Ratio/max': max_ratio,
                 'IS_Ratio/avg': avg_ratio,
-                'Timing/batch_time': batch_time,
-                'Timing/forward_time': forward_time,
-                'Timing/backward_time': backward_time,
-                'Timing/vtrace_time': vtrace_time
+                'Time/batch': batch_time,
+                'Time/forward': forward_time,
+                'Time/backward': backward_time,
+                'Time/total': batch_time + forward_time + backward_time
             }
             
             for name, value in metrics.items():
@@ -115,5 +142,10 @@ class Learner:
                 self.log_metrics()
 
     def cleanup(self):
-        if hasattr(self, 'writer'):
-            self.writer.close()
+        if hasattr(self, 'writers'):
+            for category in self.writers.values():
+                for writer in category.values():
+                    writer.close()
+
+    def __del__(self):
+        self.cleanup()
