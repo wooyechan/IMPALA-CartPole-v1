@@ -8,7 +8,7 @@ This project implements the IMPALA (Importance Weighted Actor-Learner Architectu
 - **Environment**: CartPole-v1 (OpenAI Gym)
 - **Implementation Approach**: Multi-process with potential for distributed learning
 
-![Project Overview Graph](report/graph.svg)
+![Project Overview Graph](report/plots/score.png)
 
 ## Key Features
 
